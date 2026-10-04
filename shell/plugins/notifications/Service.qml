@@ -396,6 +396,8 @@ Item {
   function invokePopupDefault(index) {
     if (index < 0 || index >= popupModel.count) return
     var entry = popupModel.get(index)
+    // A newer click supersedes one still waiting on its sender's urgent event.
+    cancelSenderActivation()
 
     // Run the argv (via Util.execArgv, no shell interpretation). Detached so it
     // outlives the shell, which installer toasts depend on: they restart it.
@@ -460,6 +462,11 @@ Item {
   function followSenderActivation(sender) {
     pendingActivation = sender
     pendingActivationTimer.restart()
+  }
+
+  function cancelSenderActivation() {
+    pendingActivation = null
+    pendingActivationTimer.stop()
   }
 
   Timer {
