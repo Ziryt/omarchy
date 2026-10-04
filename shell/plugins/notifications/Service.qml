@@ -5,6 +5,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import Quickshell.Services.Notifications
 import qs.Commons
 
@@ -423,27 +424,59 @@ Item {
       // Notification already torn down by the server — fall through to focus.
       console.warn("invoke default failed:", e)
     }
+    var sender = {
+      app: entry && entry.app ? String(entry.app) : "",
+      desktopEntry: ref && ref.desktopEntry ? String(ref.desktopEntry) : ""
+    }
     // Chat apps (Slack, Discord, Vesktop, etc.) rarely register a "default"
     // libnotify action — they just expect clicking the notification to
-    // focus their window. Apps that do register one (Telegram) try to raise
-    // themselves, but without an activation token Hyprland won't let them.
-    // So focus the sending app by class either way.
-    focusApp(entry)
+    // focus their window. Fall back to focusing the sending app by class so
+    // that click-to-jump actually works. An app that does register one raises
+    // its own window, unless a window rule blocks its activation (Telegram's
+    // focus_on_activate = false); then follow its urgent event instead.
+    if (invoked) followSenderActivation(sender)
+    else focusApp(sender)
     dismissPopup(index)
   }
 
   // Try to focus an existing Hyprland window matching the notification's
-  // sender. The helper handles case-insensitive class matching.
-  function focusApp(entry) {
-    if (!entry || !entry.app) return
-    focusAppProc.command = [
-      service.omarchyPath + "/bin/omarchy-hyprland-focus-app",
-      String(entry.app)
-    ]
+  // sender. The helper matches the desktop entry, then the app name.
+  function focusApp(sender, address) {
+    if (!sender || (!sender.app && !sender.desktopEntry)) return
+    var command = [service.omarchyPath + "/bin/omarchy-hyprland-focus-app"]
+    if (address) command.push("--address", address)
+    focusAppProc.command = command.concat([sender.app, sender.desktopEntry])
     focusAppProc.running = true
   }
 
   Process { id: focusAppProc; running: false }
+
+  // Hyprland posts urgent>>ADDR for every activation request, before its
+  // focus_on_activate check. For a moment after a default action, focus the
+  // window that asked, as long as it belongs to the sender. If its activation
+  // went through, that window already has focus and nothing changes.
+  property var pendingActivation: null
+
+  function followSenderActivation(sender) {
+    pendingActivation = sender
+    pendingActivationTimer.restart()
+  }
+
+  Timer {
+    id: pendingActivationTimer
+    interval: 1000
+    onTriggered: service.pendingActivation = null
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      // Another window's urgent event can land first; the helper's
+      // --address check rejects it, so keep listening until the timer ends.
+      if (!service.pendingActivation || event.name !== "urgent") return
+      service.focusApp(service.pendingActivation, String(event.data).trim())
+    }
+  }
 
   Process {
     id: ensureDirsProc
